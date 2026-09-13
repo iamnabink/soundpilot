@@ -229,12 +229,55 @@ jobs:
           test -d "$APP"
           echo "APP=$APP" >> "$GITHUB_ENV"
 
+      # Xcode re-signs Sparkle.framework itself, but not the helpers nested inside it
+      # (Updater.app, Autoupdate, the XPC services). Those keep Sparkle's own
+      # signature, which Apple rejects: "not signed with a valid Developer ID
+      # certificate" / "does not include a secure timestamp". Re-sign inside-out
+      # with our identity, hardened runtime and a timestamp, keeping each
+      # component's entitlements, then re-seal the framework and the app.
+      - name: Re-sign nested Sparkle helpers
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -euo pipefail
+          SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+          if [[ -d "$SPARKLE" ]]; then
+            V="$SPARKLE/Versions/B"
+            for t in \
+              "$V/XPCServices/Installer.xpc" \
+              "$V/XPCServices/Downloader.xpc" \
+              "$V/Updater.app" \
+              "$V/Autoupdate" \
+              "$SPARKLE"
+            do
+              [[ -e "$t" ]] || continue
+              codesign --force --options runtime --timestamp \
+                --preserve-metadata=entitlements --sign "$IDENTITY" "$t"
+              echo "re-signed: ${t#"$APP/"}"
+            done
+          fi
+          # Any other embedded framework or helper, then the app itself (its seal
+          # covers the nested code, so it must be signed last).
+          find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' ! -name 'Sparkle.framework' -print0 2>/dev/null \
+            | xargs -0 -I{} codesign --force --options runtime --timestamp --preserve-metadata=entitlements --sign "$IDENTITY" {}
+          codesign --force --options runtime --timestamp \
+            --preserve-metadata=entitlements --sign "$IDENTITY" "$APP"
+
       - name: Verify signature
         if: steps.signing.outputs.signed == 'true'
         run: |
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -d --entitlements - "$APP"
+          # Every Mach-O must carry a Developer ID signature with a timestamp.
+          find "$APP" -type f -perm -u+x -print0 | while IFS= read -r -d '' f; do
+            file -b "$f" | grep -q Mach-O || continue
+            info="$(codesign -dvv "$f" 2>&1)"
+            echo "$info" | grep -q "Authority=Developer ID Application" || { echo "::error::not Developer ID signed: $f"; exit 1; }
+            echo "$info" | grep -q "^Timestamp=" || { echo "::error::no secure timestamp: $f"; exit 1; }
+          done
+          echo "All nested binaries are Developer ID signed with timestamps."
 
       - name: Notarize app
         if: steps.signing.outputs.signed == 'true'
@@ -249,8 +292,23 @@ jobs:
           ZIP="$RUNNER_TEMP/$APP_NAME-notarize.zip"
           # notarytool takes an archive, not a .app directory.
           ditto -c -k --keepParent "$APP" "$ZIP"
+          # Submit, then always fetch Apple's log so a rejection shows its reasons in the run.
+          set +e
           xcrun notarytool submit "$ZIP" \
-            --key "$P8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait
+            --key "$P8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait \
+            --output-format json > "$RUNNER_TEMP/notary.json"
+          RC=$?
+          set -e
+          SUB_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
+          STATUS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
+          echo "Notarization $SUB_ID: ${STATUS:-unknown}"
+          if [[ -n "$SUB_ID" ]]; then
+            xcrun notarytool log "$SUB_ID" --key "$P8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+          fi
+          if [[ $RC -ne 0 || "$STATUS" != "Accepted" ]]; then
+            echo "::error::Notarization was not accepted (status: ${STATUS:-unknown}). See the log above."
+            exit 1
+          fi
           # Staple so Gatekeeper validates offline.
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
@@ -286,8 +344,20 @@ jobs:
           codesign --force --sign "$IDENTITY" --timestamp "$DMG"
           # The DMG is notarized separately from the .app inside it, so the
           # download itself also passes Gatekeeper.
+          set +e
           xcrun notarytool submit "$DMG" \
-            --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait
+            --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait \
+            --output-format json > "$RUNNER_TEMP/notary-dmg.json"
+          RC=$?
+          set -e
+          SUB_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RUNNER_TEMP/notary-dmg.json" 2>/dev/null || true)"
+          STATUS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary-dmg.json" 2>/dev/null || true)"
+          echo "DMG notarization $SUB_ID: ${STATUS:-unknown}"
+          if [[ $RC -ne 0 || "$STATUS" != "Accepted" ]]; then
+            [[ -n "$SUB_ID" ]] && xcrun notarytool log "$SUB_ID" --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            echo "::error::DMG notarization was not accepted (status: ${STATUS:-unknown})."
+            exit 1
+          fi
           xcrun stapler staple "$DMG"
           xcrun stapler validate "$DMG"
 
