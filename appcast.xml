@@ -1,9 +1,18 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <channel>
-    <title>SoundPilot</title>
-    <link>https://github.com/iamnabink/soundpilot</link>
-    <description>SoundPilot update feed</description>
-    <language>en</language>
-  </channel>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+    <channel>
+        <title>SoundPilot</title>
+        <link>https://github.com/iamnabink/soundpilot</link>
+        <description>SoundPilot update feed</description>
+        <language>en</language>
+        <item>
+            <title>1.0.1</title>
+            <pubDate>Sun, 13 Sep 2026 13:19:54 +0000</pubDate>
+            <link>https://github.com/iamnabink/soundpilot/releases/tag/v1.0.1</link>
+            <sparkle:version>1000199</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.4</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/iamnabink/soundpilot/releases/download/v1.0.1/SoundPilot-v1.0.1.dmg" length="4663434" type="application/octet-stream" sparkle:edSignature="ZltEOyHtfF23/tWoM7KzOZnNnmT1CNYpOE6ZVF0Sp9mde5dgWs7Jr9r6idAHueg2CPJuFDdZXArjSVc62NFtDQ=="/>
+        </item>
+    </channel>
 </rss>
