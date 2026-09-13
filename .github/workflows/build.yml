@@ -10,6 +10,13 @@ on:
   pull_request:
     paths-ignore: ['**.md', 'assets/**', 'guide/**', 'appcast.xml']
 
+# Name the run after what is being built rather than the head commit message,
+# so the Actions list stays readable at a glance.
+run-name: >-
+  ${{ github.event_name == 'pull_request'
+      && format('Build PR #{0} · {1}', github.event.number, github.head_ref)
+      || format('Build {0}', github.ref_name) }}
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
