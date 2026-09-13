@@ -6,9 +6,9 @@ import SwiftUI
 struct AboutTab: View {
     static let authorName = "iamnabink"
     static let authorURL = URL(string: "https://github.com/iamnabink")!
-    static let repositoryURL = URL(string: "https://github.com/iamnabink/soundpilot-macos-volume-mixer")!
-    static let issuesURL = URL(string: "https://github.com/iamnabink/soundpilot-macos-volume-mixer/issues")!
-    static let releasesURL = URL(string: "https://github.com/iamnabink/soundpilot-macos-volume-mixer/releases")!
+    static let repositoryURL = URL(string: "https://github.com/iamnabink/soundpilot")!
+    static let issuesURL = URL(string: "https://github.com/iamnabink/soundpilot/issues")!
+    static let releasesURL = URL(string: "https://github.com/iamnabink/soundpilot/releases")!
 
     private var versionShort: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"

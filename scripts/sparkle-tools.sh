@@ -52,7 +52,7 @@ case "$CMD" in
         cp "$ARCHIVE" "$RELEASE_DIR/"
         # generate_appcast signs items with the Keychain EdDSA key and writes appcast.xml
         "$SPARKLE_BIN/generate_appcast" \
-            --download-url-prefix "${DOWNLOAD_URL_PREFIX:-https://github.com/iamnabink/soundpilot-macos-volume-mixer/releases/download/latest/}" \
+            --download-url-prefix "${DOWNLOAD_URL_PREFIX:-https://github.com/iamnabink/soundpilot/releases/download/latest/}" \
             "$RELEASE_DIR"
         if [[ -f "$RELEASE_DIR/appcast.xml" ]]; then
             cp "$RELEASE_DIR/appcast.xml" "$PROJECT_DIR/appcast.xml"

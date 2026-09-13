@@ -20,7 +20,7 @@
 	<!-- Public HTTPS URL for Sparkle's appcast. Must be reachable without auth
 	     (private GitHub raw URLs will not work for end users). See guide/distribution.md. -->
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/iamnabink/soundpilot-macos-volume-mixer/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/iamnabink/soundpilot/main/appcast.xml</string>
 	<!-- SoundPilot-owned EdDSA public key (private half lives in this Mac's Keychain
 	     as "Private key for signing Sparkle updates"). Back it up with:
 	     scripts/sparkle-tools.sh export-key -->
