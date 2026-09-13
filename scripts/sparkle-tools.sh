@@ -1,15 +1,22 @@
 #!/bin/bash
-# Sparkle helpers for SoundPilot outside distribution.
+# Sparkle helpers for SoundPilot.
 #
 # Commands:
-#   ./scripts/sparkle-tools.sh public-key
-#   ./scripts/sparkle-tools.sh export-key [path]     # backup private key (keep offline!)
-#   ./scripts/sparkle-tools.sh import-key <path>
-#   ./scripts/sparkle-tools.sh release <SoundPilot.dmg|zip|app>
+#   ./scripts/sparkle-tools.sh public-key                   # print the public key (matches SUPublicEDKey)
+#   ./scripts/sparkle-tools.sh export-key [path]            # back up the private key (keep offline!)
+#   ./scripts/sparkle-tools.sh import-key <path>            # restore it on another Mac
+#   ./scripts/sparkle-tools.sh release SoundPilot-vX.Y.Z.dmg
 #
-# `release` signs the archive with your EdDSA key and (re)writes appcast.xml
-# in the project root. Host that file + the archive at a public HTTPS URL
-# matching SUFeedURL in SoundPilot/Info.plist.
+# `release` signs the DMG with the EdDSA key in Keychain and rewrites
+# appcast.xml in the project root with an entry pointing at that version's
+# GitHub Release asset. Sparkle reads the appcast from the raw main-branch URL
+# in SoundPilot/Info.plist (SUFeedURL), so the last step is always:
+#
+#   git add appcast.xml && git commit -m "chore(release): appcast for vX.Y.Z" && git push
+#
+# The DMG must already be attached to the GitHub Release for that tag, byte
+# for byte identical to the file signed here. build-dmg.sh --appcast --release
+# does both in the right order.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,7 +81,7 @@ case "$CMD" in
         if [[ -f "$RELEASE_DIR/appcast.xml" ]]; then
             cp "$RELEASE_DIR/appcast.xml" "$PROJECT_DIR/appcast.xml"
             echo "Updated $PROJECT_DIR/appcast.xml"
-            echo "Upload the archive + appcast to a public HTTPS host matching SUFeedURL."
+            echo "Next: make sure $(basename "$ARCHIVE") is attached to the GitHub Release, then commit and push appcast.xml."
         else
             echo "error: generate_appcast did not produce appcast.xml" >&2
             exit 1
@@ -86,7 +93,7 @@ Usage:
   sparkle-tools.sh public-key
   sparkle-tools.sh export-key [path]
   sparkle-tools.sh import-key <path>
-  sparkle-tools.sh release <SoundPilot.dmg|zip|app>
+  sparkle-tools.sh release SoundPilot-vX.Y.Z.dmg
 EOF
         exit 1
         ;;
