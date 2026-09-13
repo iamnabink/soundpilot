@@ -17,7 +17,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 find_sparkle_bin() {
     local candidate
+    # build-dmg.sh builds into build/DerivedData and passes it here; a plain
+    # Xcode build lands in ~/Library/Developer/Xcode/DerivedData instead.
     for candidate in \
+        "${SPARKLE_DERIVED_DATA:-$PROJECT_DIR/build/DerivedData}"/SourcePackages/artifacts/sparkle/Sparkle/bin \
         "$HOME/Library/Developer/Xcode/DerivedData"/SoundPilot-*/SourcePackages/artifacts/sparkle/Sparkle/bin
     do
         if [[ -x "${candidate}/generate_keys" ]]; then
@@ -46,13 +49,27 @@ case "$CMD" in
         "$SPARKLE_BIN/generate_keys" -f "$2"
         ;;
     release)
-        ARCHIVE="${2:?Usage: $0 release <SoundPilot.dmg|zip|app>}"
+        ARCHIVE="${2:?Usage: $0 release <SoundPilot-vX.Y.Z.dmg>}"
+        # Sparkle downloads from the exact URL in the appcast, so the prefix must
+        # be the release's own asset path. "latest" is a GitHub redirect page and
+        # does not serve files.
+        if [[ -z "${DOWNLOAD_URL_PREFIX:-}" ]]; then
+            TAG="$(basename "$ARCHIVE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[^/]*' | sed 's/\.dmg$//;s/\.zip$//' || true)"
+            if [[ -z "$TAG" ]]; then
+                echo "error: cannot infer the version from '$(basename "$ARCHIVE")'; set DOWNLOAD_URL_PREFIX" >&2
+                exit 1
+            fi
+            DOWNLOAD_URL_PREFIX="https://github.com/iamnabink/soundpilot/releases/download/$TAG/"
+        fi
         RELEASE_DIR="$PROJECT_DIR/build/sparkle-release"
         mkdir -p "$RELEASE_DIR"
         cp "$ARCHIVE" "$RELEASE_DIR/"
+        # Seed with the committed appcast so earlier versions stay in the feed.
+        [[ -f "$PROJECT_DIR/appcast.xml" ]] && cp "$PROJECT_DIR/appcast.xml" "$RELEASE_DIR/appcast.xml"
         # generate_appcast signs items with the Keychain EdDSA key and writes appcast.xml
         "$SPARKLE_BIN/generate_appcast" \
-            --download-url-prefix "${DOWNLOAD_URL_PREFIX:-https://github.com/iamnabink/soundpilot/releases/download/latest/}" \
+            --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
+            --link "https://github.com/iamnabink/soundpilot/releases" \
             "$RELEASE_DIR"
         if [[ -f "$RELEASE_DIR/appcast.xml" ]]; then
             cp "$RELEASE_DIR/appcast.xml" "$PROJECT_DIR/appcast.xml"

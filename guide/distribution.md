@@ -39,31 +39,34 @@ Sparkle clients fetch `SUFeedURL` with **no authentication**. A private GitHub r
 
 The repository is public, so `SUFeedURL` in `SoundPilot/Info.plist` points at the raw `appcast.xml` on the `main` branch and the DMGs live on GitHub Releases. The release workflow below rewrites and commits `appcast.xml` on every tagged release.
 
-## Build a notarized DMG
+## Build a notarized DMG locally
 
 ```bash
-./scripts/build-dmg.sh
+./scripts/build-dmg.sh v1.2.3
 ```
 
-Produces:
+The script is the local twin of the CI workflow: same version scheme, same signing flags, same DMG layout, same file name. It archives with Developer ID, re-signs Sparkle's nested helpers, notarizes and staples the app, builds the DMG, then signs, notarizes and staples that too. Output lands at `build/SoundPilot-v1.2.3.dmg`.
 
-- `build/export/SoundPilot.app` — Developer ID signed + notarized + stapled
-- `build/SoundPilot.dmg` — signed + notarized + stapled
+| Flag | Effect |
+| --- | --- |
+| `--skip-notarize` | Sign only. Gatekeeper warns on launch; for local testing |
+| `--appcast` | Also sign the DMG for Sparkle and rewrite `appcast.xml` |
+| `--release` | Also create the GitHub Release and attach the DMG |
 
-Give users the DMG. Gatekeeper will accept it on first launch (right-click → Open still works if they haven’t launched a notarized app before, but stapled notarization usually skips that).
+Notarization needs the keychain profile from `./scripts/setup-notary.sh` once per Mac.
 
-## Ship an update
+### Why Sparkle's helpers are re-signed
 
-1. Bump `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in the Xcode target.
-2. `./scripts/build-dmg.sh`
-3. Sign + regenerate appcast:
+Xcode re-signs the outer shell of `Sparkle.framework` but leaves the XPC services and updater helpers inside it with the ad-hoc signature they ship with from Swift Package Manager. Apple's notary service rejects ad-hoc signed nested executables, so both the script and the CI workflow sign them inside-out with the Developer ID before notarizing, and fail early if any remain ad-hoc.
+
+## Ship an update by hand
 
 ```bash
-DOWNLOAD_URL_PREFIX="https://your-public-host/soundpilot/" \
-  ./scripts/sparkle-tools.sh release build/SoundPilot.dmg
+./scripts/build-dmg.sh v1.2.3 --appcast --release
+git add appcast.xml && git commit -m "chore(release): appcast for v1.2.3" && git push
 ```
 
-4. Upload `build/SoundPilot.dmg` (or the copy under `build/sparkle-release/`) and `appcast.xml` to the public host matching `SUFeedURL`.
+That builds, notarizes, creates the release, attaches the DMG, and rewrites `appcast.xml` with a signed entry pointing at that release's asset. Pushing the appcast is what makes existing installs see the update.
 
 ## Automated releases (GitHub Actions)
 

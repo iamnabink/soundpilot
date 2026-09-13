@@ -203,6 +203,9 @@ jobs:
             # Xcode signs the app, Sparkle.framework and its XPC helpers with
             # the right entitlements and hardened runtime (ENABLE_HARDENED_RUNTIME
             # is set in the project), which is what notarization requires.
+            # Conditional settings like CODE_SIGN_IDENTITY[sdk=macosx*] cannot be
+            # passed on the command line; xcodebuild mangles the bracket into
+            # the value. The project no longer carries one, so the plain key is enough.
             SIGN_ARGS=(
               CODE_SIGN_STYLE=Manual
               CODE_SIGN_IDENTITY="$IDENTITY"
@@ -264,12 +267,37 @@ jobs:
           codesign --force --options runtime --timestamp \
             --preserve-metadata=entitlements --sign "$IDENTITY" "$APP"
 
+      - name: Re-sign Sparkle's nested helpers
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -euo pipefail
+          # Xcode re-signs Sparkle.framework's outer shell but leaves the XPC
+          # services and updater helpers inside it ad-hoc signed as they came
+          # from SPM. Notarization rejects ad-hoc nested executables, so sign
+          # them inside-out, then the framework, then the app on top.
+          B="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+          for nested in "$B/XPCServices/Downloader.xpc" "$B/XPCServices/Installer.xpc" "$B/Autoupdate" "$B/Updater.app"; do
+            [[ -e "$nested" ]] || continue
+            codesign --force --sign "$IDENTITY" --options runtime --timestamp --preserve-metadata=entitlements "$nested"
+          done
+          codesign --force --sign "$IDENTITY" --options runtime --timestamp "$APP/Contents/Frameworks/Sparkle.framework"
+          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+            --entitlements SoundPilot/SoundPilot.entitlements "$APP"
+
       - name: Verify signature
         if: steps.signing.outputs.signed == 'true'
         run: |
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -d --entitlements - "$APP"
+          # Every nested executable must carry the Developer ID, or notarization fails.
+          ADHOC="$(find "$APP/Contents/Frameworks" \( -name '*.xpc' -o -name '*.app' -o -name Autoupdate \) -not -path '*/Current/*' \
+            -exec sh -c 'codesign -dvv "$1" 2>&1 | grep -q "Signature=adhoc" && echo "$1"' _ {} \;)"
+          if [[ -n "$ADHOC" ]]; then
+            echo "::error::Still ad-hoc signed (notarization would reject):"; echo "$ADHOC"; exit 1
+          fi
           # Every Mach-O must carry a Developer ID signature with a timestamp.
           find "$APP" -type f -perm -u+x -print0 | while IFS= read -r -d '' f; do
             file -b "$f" | grep -q Mach-O || continue
