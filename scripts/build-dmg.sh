@@ -230,17 +230,30 @@ if $DO_APPCAST; then
 fi
 
 # ─── Optional: GitHub Release ───────────────────────────────────────────────
+# Ordering here is what keeps this script and CI from fighting. The Release
+# workflow fires on a *published* release and, if it finds no DMG attached,
+# builds its own and uploads it with --clobber. So: create the release as a
+# DRAFT, attach this DMG, and only then publish. When the workflow wakes up
+# it sees the asset already there and stands down, leaving the bytes that the
+# appcast signature (if --appcast) was computed over exactly as they are.
 if $DO_RELEASE; then
     step "Publishing GitHub Release $TAG"
     FLAGS=()
     $PRERELEASE && FLAGS+=(--prerelease)
     if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
         echo "Release $TAG exists; attaching DMG."
+        gh release upload "$TAG" "$DMG_PATH" --repo "$REPO" --clobber
     else
-        gh release create "$TAG" --repo "$REPO" --title "$APP_NAME $TAG" --generate-notes "${FLAGS[@]}"
+        gh release create "$TAG" --repo "$REPO" --title "$APP_NAME $TAG" --generate-notes --draft "${FLAGS[@]}"
+        gh release upload "$TAG" "$DMG_PATH" --repo "$REPO" --clobber
+        gh release edit "$TAG" --repo "$REPO" --draft=false
     fi
-    gh release upload "$TAG" "$DMG_PATH" --repo "$REPO" --clobber
     echo "https://github.com/$REPO/releases/tag/$TAG"
+    if $DO_APPCAST; then
+        echo
+        echo "appcast.xml was signed over this exact DMG. Commit and push it now:"
+        echo "  git add appcast.xml && git commit -m 'chore(release): appcast for $TAG' && git push"
+    fi
 fi
 
 # ─── Summary ────────────────────────────────────────────────────────────────

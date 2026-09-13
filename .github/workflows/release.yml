@@ -91,8 +91,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # If the release already carries a DMG, it was built and attached locally by
+  # scripts/build-dmg.sh --release. Rebuilding would overwrite those bytes, and
+  # any appcast signature computed over the local file would stop matching.
+  # So CI stands down. A manual dispatch is an explicit request and still runs.
+  preflight:
+    name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }} → preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          HAS_DMG="$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets \
+            --jq '[.assets[].name | select(endswith(".dmg"))] | length' 2>/dev/null || echo 0)"
+          if [[ "${{ github.event_name }}" == "release" && "$HAS_DMG" != "0" ]]; then
+            echo "::notice::$TAG already has a DMG attached (built locally). Skipping the CI build so those bytes stay as signed."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$HAS_DMG" != "0" ]] && echo "::warning::$TAG already has a DMG; this manual run will replace it. Re-run --appcast afterwards if you use local signing."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   dmg:
     name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }} → notarized DMG
+    needs: preflight
+    if: needs.preflight.outputs.skip != 'true'
     # Needs Xcode 26+ for Swift 6.2 features; setup-xcode picks the newest the image has.
     runs-on: macos-latest
     environment: release

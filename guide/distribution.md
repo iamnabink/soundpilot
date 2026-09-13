@@ -66,7 +66,16 @@ Xcode re-signs the outer shell of `Sparkle.framework` but leaves the XPC service
 git add appcast.xml && git commit -m "chore(release): appcast for v1.2.3" && git push
 ```
 
-That builds, notarizes, creates the release, attaches the DMG, and rewrites `appcast.xml` with a signed entry pointing at that release's asset. Pushing the appcast is what makes existing installs see the update.
+That builds, notarizes, creates the release as a draft, attaches the DMG, publishes it, and rewrites `appcast.xml` with a signed entry pointing at that asset. Pushing the appcast is what makes existing installs see the update.
+
+### How the local script and CI stay out of each other's way
+
+Publishing a release fires the Release workflow. If it rebuilt every time, a locally built DMG would be overwritten by CI's bytes, and an appcast signature computed over the local file would stop matching. Two rules prevent that:
+
+- The local script attaches the DMG **before** publishing (draft, upload, then publish), so the asset is already there when the workflow wakes up.
+- The workflow's first job checks for an attached DMG and stands down if one exists, logging a notice. Only a manual **Run workflow** overrides this, and it warns when it is about to replace an existing asset.
+
+So either path is safe on its own. Pick one per release and do not mix them for the same tag.
 
 ## Automated releases (GitHub Actions)
 
