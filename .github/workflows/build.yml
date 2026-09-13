@@ -1,0 +1,44 @@
+name: Build
+
+# Compile check for pull requests and pushes to main. No signing, no
+# artifacts — the release pipeline lives in release.yml.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'assets/**', 'guide/**', 'appcast.xml']
+  pull_request:
+    paths-ignore: ['**.md', 'assets/**', 'guide/**', 'appcast.xml']
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: xcodebuild (Debug, unsigned)
+    # SoundPilot uses Swift 6.2 features (nonisolated types), so it needs Xcode 26+.
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          xcodebuild -project SoundPilot.xcodeproj \
+            -scheme SoundPilot \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee "$RUNNER_TEMP/build.log" | grep -E "error:|\*\* BUILD" || true
+          grep -q "\*\* BUILD SUCCEEDED \*\*" "$RUNNER_TEMP/build.log"

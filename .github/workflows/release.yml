@@ -1,0 +1,338 @@
+name: Release
+
+# Builds a Developer ID signed + notarized SoundPilot DMG and attaches it to a
+# GitHub Release. SoundPilot is NOT distributed through the Mac App Store
+# (per-app audio taps and DDC need App Sandbox off), so the DMG is the only
+# release channel. Existing installs pick the new version up through Sparkle
+# when the appcast step is enabled (see SPARKLE_PRIVATE_KEY below).
+#
+#   git tag v1.2.3 && git push origin v1.2.3     builds + publishes the Release
+#
+# `workflow_dispatch` builds on demand:
+#   tag     = version label (e.g. v1.2.3)
+#   publish = false → build, attach the DMG to the run, publish nothing
+#             true  → also create the GitHub Release (and update the appcast)
+#
+# The tag doubles as the app version: v1.2.3 → MARKETING_VERSION 1.2.3, and
+# CURRENT_PROJECT_VERSION is the commit count so Sparkle sees a monotonically
+# increasing build number.
+#
+# ─── SECRETS ────────────────────────────────────────────────────────────────
+# Stored in the `release` ENVIRONMENT (Settings → Environments → release), so
+# the job declares `environment: release` to read them.
+#
+#   MACOS_CERTIFICATE       base64 of the "Developer ID Application" .p12
+#                           (export from Keychain Access WITH the private key)
+#   MACOS_CERTIFICATE_PWD   password of that .p12
+#   APPLE_TEAM_ID           10-character team id
+#   ASC_KEY_P8              base64 of AuthKey_<ASC_KEY_ID>.p8 — App Store Connect
+#                           API key, used only for notarization
+#   ASC_KEY_ID              App Store Connect key id
+#   ASC_ISSUER_ID           App Store Connect issuer id (UUID)
+#   KEYCHAIN_PASSWORD       optional; any string for the throwaway CI keychain
+#   SPARKLE_PRIVATE_KEY     optional; contents of the file written by
+#                           `./scripts/sparkle-tools.sh export-key`. When set,
+#                           appcast.xml is regenerated, signed, and committed
+#                           to main so Sparkle clients see the update.
+#
+# Without MACOS_CERTIFICATE the DMG is built UNSIGNED and un-notarized; macOS
+# will warn on first launch (right-click → Open). Fine for testing the
+# pipeline, not for shipping.
+# ────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version label for this run (e.g. v1.2.3)"
+        required: true
+        default: v0.0.0-manual
+        type: string
+      publish:
+        description: "Create the GitHub Release (false = build only)"
+        required: true
+        default: false
+        type: boolean
+
+env:
+  APP_NAME: SoundPilot
+  SCHEME: SoundPilot
+
+jobs:
+  dmg:
+    name: DMG (Developer ID → GitHub Release)
+    # SoundPilot uses Swift 6.2 features (nonisolated types), so it needs Xcode 26+.
+    runs-on: macos-26
+    environment: release
+    permissions:
+      contents: write
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for the build number + release notes
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          # Marketing version is the tag without the leading "v" and without
+          # any pre-release suffix (v1.2.3-beta → 1.2.3).
+          MARKETING="${TAG#v}"; MARKETING="${MARKETING%%-*}"
+          BUILD="$(git rev-list --count HEAD)"
+          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+          echo "marketing=$MARKETING" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD"        >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG  Version: $MARKETING ($BUILD)"
+
+      - name: Import Developer ID certificate
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MACOS_CERTIFICATE:-}" ]]; then
+            echo "::warning::MACOS_CERTIFICATE unset — building UNSIGNED."
+            echo "signed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CERT="$RUNNER_TEMP/developer_id.p12"
+          KC="$RUNNER_TEMP/app-signing.keychain-db"
+          KC_PASS="${KEYCHAIN_PASSWORD:-soundpilot-ci}"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$CERT"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$CERT" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KC"
+          # Let codesign use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychain -d user -s "$KC"
+          ID="$(security find-identity -v -p codesigning "$KC" | grep 'Developer ID Application' | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+          if [[ -z "$ID" ]]; then
+            echo "::error::No 'Developer ID Application' identity in the .p12 — re-export WITH the private key."
+            exit 1
+          fi
+          echo "Identity: $ID"
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Archive app
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          SIGN_ARGS=()
+          if [[ "$SIGNED" == "true" ]]; then
+            # Xcode signs the app, Sparkle.framework and its XPC helpers with
+            # the right entitlements + hardened runtime (ENABLE_HARDENED_RUNTIME
+            # is set in the project), which is what notarization requires.
+            SIGN_ARGS=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="$IDENTITY"
+              "CODE_SIGN_IDENTITY[sdk=macosx*]=$IDENTITY"
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+              OTHER_CODE_SIGN_FLAGS=--timestamp
+            )
+          else
+            SIGN_ARGS=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
+          fi
+          xcodebuild -project SoundPilot.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/$APP_NAME.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            MARKETING_VERSION="${{ steps.ver.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.build }}" \
+            "${SIGN_ARGS[@]}" \
+            archive | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|\*\* ARCHIVE" || true
+          grep -q "\*\* ARCHIVE SUCCEEDED \*\*" "$RUNNER_TEMP/archive.log"
+          APP="$RUNNER_TEMP/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app"
+          test -d "$APP"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Verify signature
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -d --entitlements - "$APP"
+
+      - name: Notarize app
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          P8="$RUNNER_TEMP/asc.p8"
+          echo "$ASC_KEY_P8" | base64 --decode > "$P8"
+          ZIP="$RUNNER_TEMP/$APP_NAME-notarize.zip"
+          # notarytool takes an archive, not a .app directory.
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --key "$P8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait
+          # Staple so Gatekeeper validates offline.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      - name: Create DMG
+        id: dmg
+        run: |
+          set -euo pipefail
+          brew install create-dmg
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          DMG="$RUNNER_TEMP/$APP_NAME-${{ steps.ver.outputs.tag }}.dmg"
+          create-dmg \
+            --volname "$APP_NAME" \
+            --window-pos 200 120 --window-size 600 400 --icon-size 100 \
+            --icon "$APP_NAME.app" 175 120 \
+            --hide-extension "$APP_NAME.app" \
+            --app-drop-link 425 120 \
+            "$DMG" "$STAGE/"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          ls -lh "$DMG"
+
+      - name: Sign and notarize DMG
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          DMG="${{ steps.dmg.outputs.dmg }}"
+          codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+          # The DMG is notarized separately from the .app inside it, so the
+          # download itself also passes Gatekeeper.
+          xcrun notarytool submit "$DMG" \
+            --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          SIGNED="${{ steps.signing.outputs.signed }}"
+          PREV="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo '')"
+          {
+            echo "# 🎚 $APP_NAME $TAG"
+            echo ""
+            if [[ -z "$PREV" ]]; then
+              echo "## 🎉 Initial Release"; echo ""
+              git log --pretty=format:"- %s" --reverse | head -20; echo ""
+            else
+              echo "## 📝 Changes since $PREV"; echo ""
+              F="$(git log --pretty=format:'%s' "$PREV"..HEAD | grep -iE '^(feat|add|new)' | sed 's/^/- /' || true)"
+              X="$(git log --pretty=format:'%s' "$PREV"..HEAD | grep -iE '^(fix|bug|patch)' | sed 's/^/- /' || true)"
+              O="$(git log --pretty=format:'%s' "$PREV"..HEAD | grep -ivE '^(feat|add|new|fix|bug|patch)' | sed 's/^/- /' || true)"
+              [[ -n "$F" ]] && { echo "### ✨ New Features"; echo "$F"; echo ""; }
+              [[ -n "$X" ]] && { echo "### 🐛 Bug Fixes";    echo "$X"; echo ""; }
+              [[ -n "$O" ]] && { echo "### 🔧 Other Changes"; echo "$O"; echo ""; }
+            fi
+            echo "## 📥 Install"
+            echo ""
+            echo "Download the DMG below, open it, and drag $APP_NAME to Applications."
+            echo "Existing installs update automatically through Sparkle."
+            if [[ "$SIGNED" == "true" ]]; then
+              echo ""
+              echo "Signed with a Developer ID certificate and notarized by Apple — opens with no security warning."
+            else
+              echo ""
+              echo "⚠️ This build is unsigned; macOS will warn on first launch (right-click → Open)."
+            fi
+            echo ""
+            echo "## 💻 Requirements"
+            echo "- macOS 15.4 (Sequoia) or later"
+            echo "- Apple Silicon or Intel"
+            [[ -n "$PREV" ]] && { echo ""; echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV...$TAG"; }
+          } > "$RUNNER_TEMP/release_notes.md"
+          cat "$RUNNER_TEMP/release_notes.md"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: ${{ steps.dmg.outputs.dmg }}
+          name: "${{ env.APP_NAME }} ${{ steps.ver.outputs.tag }}"
+          body_path: ${{ runner.temp }}/release_notes.md
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.tag, '-') }}
+          make_latest: ${{ !contains(steps.ver.outputs.tag, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Sparkle: sign the DMG with the EdDSA key, regenerate appcast.xml and
+      # commit it to main. SUFeedURL in SoundPilot/Info.plist points at the raw
+      # main-branch appcast.xml, so this is what makes in-app updates work.
+      - name: Update Sparkle appcast
+        if: >-
+          (github.event_name == 'push' || github.event.inputs.publish == 'true')
+          && steps.signing.outputs.signed == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+            echo "::warning::SPARKLE_PRIVATE_KEY unset — skipping appcast update; existing installs will not see this release."
+            exit 0
+          fi
+          TAG="${{ steps.ver.outputs.tag }}"
+          BIN="$(find "$RUNNER_TEMP/dd" -type f -path '*/artifacts/sparkle/Sparkle/bin/generate_appcast' | head -1)"
+          if [[ -z "$BIN" ]]; then
+            echo "::error::generate_appcast not found in SPM artifacts"; exit 1
+          fi
+          KEY="$RUNNER_TEMP/sparkle_ed25519.key"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEY"
+          REL="$RUNNER_TEMP/sparkle-release"
+          mkdir -p "$REL"
+          cp "${{ steps.dmg.outputs.dmg }}" "$REL/"
+          # Keep earlier entries: generate_appcast merges with an existing appcast.xml.
+          cp appcast.xml "$REL/appcast.xml" || true
+          "$BIN" \
+            --ed-key-file "$KEY" \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/$TAG/" \
+            --link "https://github.com/${{ github.repository }}/releases/tag/$TAG" \
+            -o "$REL/appcast.xml" \
+            "$REL"
+          rm -f "$KEY"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp "$REL/appcast.xml" appcast.xml
+          git add appcast.xml
+          git commit -m "chore(release): update appcast for $TAG" || { echo "appcast unchanged"; exit 0; }
+          git push origin main
+
+      - name: Upload DMG artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ steps.ver.outputs.tag }}
+          path: ${{ steps.dmg.outputs.dmg }}
+          if-no-files-found: warn
+          retention-days: 30
