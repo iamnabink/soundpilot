@@ -226,12 +226,16 @@ xcodebuild -project SoundPilot.xcodeproj -scheme SoundPilot -configuration Debug
 
 ## Releasing
 
-Push a version tag and GitHub Actions does the rest: archive with Developer ID, notarize, build
-the DMG, notarize that, publish the release and regenerate the Sparkle appcast.
+Releases drive the pipeline, not commits. Publish a GitHub Release and the workflow archives with
+Developer ID, notarizes, builds the DMG, notarizes that too, attaches it to the release and
+regenerates the Sparkle appcast.
 
 ```bash
-git tag v1.2.3 && git push origin v1.2.3
+gh release create v1.2.3 --generate-notes
 ```
+
+The tag is the version, and the build number Sparkle compares is derived from it rather than from
+commit history, so unrelated pushes never move it.
 
 The required secrets are listed in [guide/distribution.md](guide/distribution.md).
 

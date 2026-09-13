@@ -71,11 +71,23 @@ DOWNLOAD_URL_PREFIX="https://your-public-host/soundpilot/" \
 
 ### Trigger
 
+The workflow is **release-driven**, not commit-driven. Publishing a GitHub Release starts it:
+
 ```bash
-git tag v1.2.3 && git push origin v1.2.3
+gh release create v1.2.3 --generate-notes
 ```
 
-The tag is the version: `v1.2.3` sets `MARKETING_VERSION` to `1.2.3`, and the commit count becomes `CURRENT_PROJECT_VERSION` so Sparkle always sees a higher build number. A tag with a suffix (`v1.3.0-beta.1`) is published as a pre-release. **Actions → Release → Run workflow** builds on demand; leave `publish` off to only attach the DMG to the run.
+That creates the tag, the release and the run in one step, and the DMG attaches itself to that release when the build finishes. Publishing a draft from the web UI works the same way. A pushed tag on its own does nothing until a release exists for it.
+
+The tag is the version. `v1.2.3` sets `MARKETING_VERSION` to `1.2.3`, and `CURRENT_PROJECT_VERSION` is derived from that version rather than from commit history:
+
+```
+major*1000000 + minor*10000 + patch*100 + stage
+```
+
+`stage` is the pre-release counter, or 99 for a final release. So `v1.2.3-beta.4` becomes 1020304 and `v1.2.3` becomes 1020399. A beta always sorts below its own final, and each release sorts above the previous one, which is what Sparkle compares. Keep minor and patch under 100.
+
+**Actions → Release → Run workflow** builds on demand. Leave `publish` off to attach the DMG to the workflow run without touching any release.
 
 ### Secrets
 
@@ -91,6 +103,8 @@ Create a repository environment named `release` (Settings → Environments) and 
 | `ASC_ISSUER_ID` | the issuer id (UUID) |
 | `SPARKLE_PRIVATE_KEY` | contents of the file from `./scripts/sparkle-tools.sh export-key` |
 | `KEYCHAIN_PASSWORD` | optional, any string |
+
+These are the same six secret names the author's other macOS project uses, so the values can be pasted straight across between repositories. GitHub never reveals a stored secret, so they have to be re-entered per repository rather than copied by tooling.
 
 ```bash
 base64 -i DeveloperID.p12 | pbcopy        # MACOS_CERTIFICATE

@@ -17,8 +17,8 @@ concurrency:
 jobs:
   build:
     name: xcodebuild (Debug, unsigned)
-    # SoundPilot uses Swift 6.2 features (nonisolated types), so it needs Xcode 26+.
-    runs-on: macos-26
+    # Needs Xcode 26+ for Swift 6.2 features; setup-xcode picks the newest the image has.
+    runs-on: macos-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
